@@ -1,0 +1,578 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+
+/* ============================================================
+   CALDERYS — ESCAPE THE MAZE · Workshop game tracker
+   Palette (strict): Orange rgb(232,78,15) · Blue rgb(29,49,118)
+                     Black · White / light grey
+   Storage: window.storage (shared) acts as the game server.
+   Keys:  bfgame:{CODE}            → game config
+          bfgame:{CODE}:t:{TEAM}   → one team's progress
+   ============================================================ */
+
+const ORANGE = "rgb(232,78,15)";
+const BLUE = "rgb(29,49,118)";
+const INK = "rgb(0,0,0)";
+const GREY_BG = "#F2F3F6";
+const GREY_LINE = "#DDE0E8";
+
+const TEAM_COLORS = [ORANGE, BLUE, "#000000", "#F08A5C", "#5C6FB0", "#8A2E00", "#101C4A", "#C43E0C"];
+const POINTS_BY_ATTEMPT = [100, 70, 40]; // 1st, 2nd, 3rd try
+const PRESET_CODES = ["581", "752", "672", "842", "482"]; // workshop lock codes
+
+const gameKey = (code) => `bfgame:${code}`;
+const teamKey = (code, team) => `bfgame:${code}:t:${encodeURIComponent(team)}`;
+
+async function loadJSON(key) {
+  try {
+    const r = await window.storage.get(key, true);
+    return r ? JSON.parse(r.value) : null;
+  } catch {
+    return null;
+  }
+}
+async function saveJSON(key, obj) {
+  try {
+    await window.storage.set(key, JSON.stringify(obj), true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const font = { fontFamily: "'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif" };
+
+function useFonts() {
+  useEffect(() => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = "https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;900&display=swap";
+    document.head.appendChild(l);
+    return () => l.remove();
+  }, []);
+}
+
+/* ---------- tiny UI atoms ---------- */
+const Btn = ({ children, onClick, kind = "orange", disabled, style = {}, small }) => {
+  const base = {
+    ...font,
+    border: "none",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontWeight: 700,
+    letterSpacing: "0.03em",
+    borderRadius: 10,
+    padding: small ? "8px 14px" : "14px 22px",
+    fontSize: small ? 13 : 16,
+    transition: "transform .08s ease, opacity .15s",
+    opacity: disabled ? 0.45 : 1,
+    color: "#fff",
+    background: kind === "orange" ? ORANGE : kind === "blue" ? BLUE : kind === "ghost" ? "transparent" : INK,
+    ...(kind === "ghost" ? { color: BLUE, border: `2px solid ${BLUE}` } : {}),
+    ...style,
+  };
+  return (
+    <button style={base} disabled={disabled} onClick={onClick}
+      onMouseDown={(e) => !disabled && (e.currentTarget.style.transform = "scale(.97)")}
+      onMouseUp={(e) => (e.currentTarget.style.transform = "scale(1)")}
+      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}>
+      {children}
+    </button>
+  );
+};
+
+const Card = ({ children, style = {} }) => (
+  <div style={{ background: "#fff", borderRadius: 16, border: `1px solid ${GREY_LINE}`, boxShadow: "0 4px 18px rgba(29,49,118,0.07)", padding: 24, ...style }}>
+    {children}
+  </div>
+);
+
+const Eyebrow = ({ children, color = ORANGE }) => (
+  <div style={{ ...font, fontSize: 11, fontWeight: 900, letterSpacing: "0.22em", textTransform: "uppercase", color, marginBottom: 6 }}>{children}</div>
+);
+
+/* ============================================================
+   MAZE — teams escape from the packed centre outward.
+   Concentric "walls"; each team owns a radial corridor with
+   one gate per question; a correct code opens the next gate.
+   ============================================================ */
+function Maze({ teams, progress, numQ }) {
+  const size = 560, cx = size / 2, cy = size / 2;
+  const rHub = 34, rMax = size / 2 - 46;
+  const ringR = (i) => rHub + ((rMax - rHub) * i) / numQ; // ring 0 = hub edge
+  const n = Math.max(teams.length, 1);
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} style={{ width: "100%", maxWidth: 640, display: "block", margin: "0 auto" }}>
+      {/* maze walls */}
+      {Array.from({ length: numQ + 1 }, (_, i) => (
+        <circle key={i} cx={cx} cy={cy} r={ringR(i)} fill="none"
+          stroke={i === numQ ? ORANGE : GREY_LINE} strokeWidth={i === numQ ? 3 : 1.6}
+          strokeDasharray={i === numQ ? "none" : "5 7"} />
+      ))}
+      {/* centre hub */}
+      <circle cx={cx} cy={cy} r={rHub} fill={BLUE} />
+      <text x={cx} y={cy - 3} textAnchor="middle" fill="#fff" style={{ ...font, fontSize: 11, fontWeight: 900, letterSpacing: "0.1em" }}>START</text>
+      <text x={cx} y={cy + 12} textAnchor="middle" fill="#9FB0E8" style={{ ...font, fontSize: 9 }}>the vault</text>
+
+      {teams.map((t, ti) => {
+        const ang = (ti / n) * Math.PI * 2 - Math.PI / 2;
+        const dx = Math.cos(ang), dy = Math.sin(ang);
+        const p = progress[t] || { steps: 0, done: false };
+        const steps = Math.min(p.steps || 0, numQ);
+        const col = TEAM_COLORS[ti % TEAM_COLORS.length];
+        const px = cx + dx * ringR(steps), py = cy + dy * ringR(steps);
+        const ex = cx + dx * (rMax + 16), ey = cy + dy * (rMax + 16);
+
+        return (
+          <g key={t}>
+            {/* corridor */}
+            <line x1={cx + dx * rHub} y1={cy + dy * rHub} x2={cx + dx * rMax} y2={cy + dy * rMax}
+              stroke={col} strokeWidth={2} opacity={0.28} />
+            {/* gates on the corridor */}
+            {Array.from({ length: numQ }, (_, gi) => {
+              const gr = ringR(gi + 1);
+              const gx = cx + dx * gr, gy = cy + dy * gr;
+              const opened = steps >= gi + 1;
+              return <circle key={gi} cx={gx} cy={gy} r={4.5} fill={opened ? col : "#fff"} stroke={col} strokeWidth={1.8} opacity={opened ? 1 : 0.7} />;
+            })}
+            {/* exit marker */}
+            <text x={ex} y={ey + 4} textAnchor="middle" style={{ ...font, fontSize: 13 }} fill={p.done ? ORANGE : "#B9BECC"}>{p.done ? "🏁" : "🚪"}</text>
+            {/* team avatar */}
+            <g style={{ transition: "transform .6s ease" }} transform={`translate(${px},${py})`}>
+              <circle r={12} fill={col} stroke="#fff" strokeWidth={3} />
+              <text y={4.5} textAnchor="middle" fill="#fff" style={{ ...font, fontSize: 11, fontWeight: 900 }}>{t.slice(0, 1).toUpperCase()}</text>
+            </g>
+            {/* team label just outside exit */}
+            <text x={cx + dx * (rMax + 34)} y={cy + dy * (rMax + 34) + 4} textAnchor="middle"
+              style={{ ...font, fontSize: 11, fontWeight: 700 }} fill={col}>{t}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ============================================================
+   FACILITATOR
+   ============================================================ */
+function Facilitator({ goHome }) {
+  const [phase, setPhase] = useState("setup"); // setup | live
+  const [code] = useState(() => String(Math.floor(1000 + Math.random() * 9000)));
+  const [teams, setTeams] = useState(["Alpha", "Beta", "Gamma", "Delta"]);
+  const [newTeam, setNewTeam] = useState("");
+  const [numQ, setNumQ] = useState(5);
+  const [codes, setCodes] = useState(PRESET_CODES.slice());
+  const [progress, setProgress] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const setNum = (nRaw) => {
+    const nq = Math.max(1, Math.min(12, nRaw || 1));
+    setNumQ(nq);
+    setCodes((c) => Array.from({ length: nq }, (_, i) => c[i] || ""));
+  };
+
+  const startGame = async () => {
+    setErr("");
+    if (teams.length < 1) return setErr("Add at least one team.");
+    if (codes.some((c) => !/^\d{3}$/.test(c))) return setErr("Every question needs a 3-digit code (000–999).");
+    setSaving(true);
+    const cfg = { code, teams, numQ, codes, started: true, createdAt: Date.now() };
+    const ok = await saveJSON(gameKey(code), cfg);
+    for (const t of teams) {
+      await saveJSON(teamKey(code, t), { q: 0, attempts: 0, score: 0, steps: 0, done: false, claimed: false });
+    }
+    setSaving(false);
+    if (!ok) return setErr("Could not save the game — check your connection and try again.");
+    setPhase("live");
+  };
+
+  // publish lobby (unstarted) as soon as facilitator opens setup, so players can join early
+  useEffect(() => {
+    saveJSON(gameKey(code), { code, teams, numQ, codes, started: false, createdAt: Date.now() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teams, numQ]);
+
+  // live polling
+  useEffect(() => {
+    if (phase !== "live") return;
+    let alive = true;
+    const tick = async () => {
+      const out = {};
+      for (const t of teams) {
+        const p = await loadJSON(teamKey(code, t));
+        if (p) out[t] = p;
+      }
+      if (alive) setProgress(out);
+    };
+    tick();
+    const id = setInterval(tick, 2500);
+    return () => { alive = false; clearInterval(id); };
+  }, [phase, code, teams]);
+
+  const board = teams
+    .map((t) => ({ t, ...(progress[t] || { q: 0, score: 0, steps: 0, done: false }) }))
+    .sort((a, b) => b.score - a.score || b.steps - a.steps);
+
+  if (phase === "live") {
+    return (
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <Eyebrow>Live · Facilitator</Eyebrow>
+            <h1 style={{ ...font, fontWeight: 900, fontSize: 28, color: BLUE, margin: 0 }}>Escape the Maze</h1>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <Eyebrow color={BLUE}>Game code</Eyebrow>
+            <div style={{ ...font, fontSize: 34, fontWeight: 900, color: ORANGE, letterSpacing: "0.2em" }}>{code}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, marginTop: 18 }}>
+          <Card>
+            <Eyebrow>The maze — every correct code opens one gate</Eyebrow>
+            <Maze teams={teams} progress={progress} numQ={numQ} />
+          </Card>
+
+          <Card>
+            <Eyebrow color={BLUE}>Leaderboard</Eyebrow>
+            <table style={{ ...font, width: "100%", borderCollapse: "collapse", fontSize: 15 }}>
+              <thead>
+                <tr style={{ color: "#777", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Team</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>On question</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Gates opened</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Score</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {board.map((r, i) => (
+                  <tr key={r.t} style={{ borderTop: `1px solid ${GREY_LINE}` }}>
+                    <td style={{ padding: "10px 8px", fontWeight: 700, color: TEAM_COLORS[teams.indexOf(r.t) % TEAM_COLORS.length] }}>
+                      {i === 0 && r.score > 0 ? "👑 " : ""}{r.t}
+                    </td>
+                    <td style={{ padding: "10px 8px" }}>{r.done ? "—" : `Q${(r.q || 0) + 1} / ${numQ}`}</td>
+                    <td style={{ padding: "10px 8px" }}>{r.steps || 0} / {numQ}</td>
+                    <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 900, color: BLUE }}>{r.score || 0}</td>
+                    <td style={{ padding: "10px 8px", textAlign: "right" }}>
+                      {r.done ? <span style={{ color: ORANGE, fontWeight: 700 }}>Escaped 🏁</span>
+                        : r.claimed ? <span style={{ color: BLUE }}>Playing</span>
+                        : <span style={{ color: "#999" }}>Not joined</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn kind="ghost" small onClick={goHome}>End session</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- setup ---------- */
+  return (
+    <div style={{ maxWidth: 760, margin: "0 auto", padding: 20 }}>
+      <Eyebrow>Facilitator · Game setup</Eyebrow>
+      <h1 style={{ ...font, fontWeight: 900, fontSize: 30, color: BLUE, marginTop: 0 }}>Build the maze</h1>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Eyebrow color={BLUE}>1 · Game code (share it with the room)</Eyebrow>
+        <div style={{ ...font, fontSize: 44, fontWeight: 900, color: ORANGE, letterSpacing: "0.25em" }}>{code}</div>
+        <div style={{ ...font, fontSize: 13, color: "#666" }}>Players enter this code on their phones to join the lobby.</div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Eyebrow color={BLUE}>2 · Teams</Eyebrow>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          {teams.map((t, i) => (
+            <span key={t} style={{ ...font, background: GREY_BG, border: `2px solid ${TEAM_COLORS[i % TEAM_COLORS.length]}`, color: INK, borderRadius: 999, padding: "6px 14px", fontWeight: 700, fontSize: 14 }}>
+              {t}
+              <button onClick={() => setTeams(teams.filter((x) => x !== t))}
+                style={{ border: "none", background: "none", color: "#999", marginLeft: 8, cursor: "pointer", fontWeight: 900 }}>×</button>
+            </span>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={newTeam} onChange={(e) => setNewTeam(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && newTeam.trim()) { setTeams([...teams, newTeam.trim()]); setNewTeam(""); } }}
+            placeholder="Add a team name…"
+            style={{ ...font, flex: 1, padding: "10px 14px", borderRadius: 10, border: `1px solid ${GREY_LINE}`, fontSize: 15 }} />
+          <Btn small kind="blue" disabled={!newTeam.trim() || teams.includes(newTeam.trim())}
+            onClick={() => { setTeams([...teams, newTeam.trim()]); setNewTeam(""); }}>Add team</Btn>
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Eyebrow color={BLUE}>3 · Questions & unlock codes</Eyebrow>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+          <span style={{ ...font, fontSize: 14, fontWeight: 700 }}>Number of questions</span>
+          <input type="number" min={1} max={12} value={numQ}
+            onChange={(e) => setNum(parseInt(e.target.value, 10))}
+            style={{ ...font, width: 70, padding: "8px 10px", borderRadius: 10, border: `1px solid ${GREY_LINE}`, fontSize: 15, fontWeight: 700 }} />
+          <Btn small kind="ghost" onClick={() => { setNum(5); setCodes(PRESET_CODES.slice()); }}>Use workshop preset (5 locks)</Btn>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
+          {codes.map((c, i) => (
+            <div key={i} style={{ background: GREY_BG, borderRadius: 12, padding: "10px 12px" }}>
+              <div style={{ ...font, fontSize: 11, fontWeight: 900, color: BLUE, letterSpacing: "0.1em" }}>QUESTION {i + 1}</div>
+              <input value={c} inputMode="numeric" maxLength={3}
+                onChange={(e) => { const v = e.target.value.replace(/\D/g, "").slice(0, 3); setCodes(codes.map((x, xi) => (xi === i ? v : x))); }}
+                placeholder="•••"
+                style={{ ...font, width: "100%", boxSizing: "border-box", marginTop: 4, padding: "8px 10px", borderRadius: 8, border: `2px solid ${/^\d{3}$/.test(c) ? ORANGE : GREY_LINE}`, fontSize: 20, fontWeight: 900, letterSpacing: "0.35em", textAlign: "center", color: INK }} />
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {err && <div style={{ ...font, color: ORANGE, fontWeight: 700, marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 10, justifyContent: "space-between" }}>
+        <Btn kind="ghost" onClick={goHome}>Back</Btn>
+        <Btn onClick={startGame} disabled={saving}>{saving ? "Opening the maze…" : "Start game →"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PARTICIPANT
+   ============================================================ */
+function Participant({ goHome }) {
+  const [phase, setPhase] = useState("join"); // join | lobby | play | done
+  const [codeIn, setCodeIn] = useState("");
+  const [game, setGame] = useState(null);
+  const [team, setTeam] = useState("");
+  const [me, setMe] = useState(null); // my progress
+  const [digits, setDigits] = useState(["", "", ""]);
+  const [flash, setFlash] = useState(null); // 'ok' | 'no' | null
+  const [err, setErr] = useState("");
+  const inputRefs = [useRef(), useRef(), useRef()];
+
+  const join = async () => {
+    setErr("");
+    const g = await loadJSON(gameKey(codeIn));
+    if (!g) return setErr("No game found with that code. Check with your facilitator.");
+    if (!team) return setErr("Pick your team.");
+    setGame(g);
+    const tk = teamKey(codeIn, team);
+    const existing = (await loadJSON(tk)) || { q: 0, attempts: 0, score: 0, steps: 0, done: false };
+    existing.claimed = true;
+    await saveJSON(tk, existing);
+    setMe(existing);
+    setPhase(g.started ? (existing.done ? "done" : "play") : "lobby");
+  };
+
+  // lobby: poll for start
+  useEffect(() => {
+    if (phase !== "lobby") return;
+    const id = setInterval(async () => {
+      const g = await loadJSON(gameKey(codeIn));
+      if (g?.started) { setGame(g); setPhase(me?.done ? "done" : "play"); }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [phase, codeIn, me]);
+
+  const submit = async () => {
+    const guess = digits.join("");
+    if (!/^\d{3}$/.test(guess) || !game || !me) return;
+    const correct = game.codes[me.q] === guess;
+    const next = { ...me };
+
+    if (correct) {
+      next.score += POINTS_BY_ATTEMPT[me.attempts] || POINTS_BY_ATTEMPT[2];
+      next.steps += 1;
+      next.q += 1;
+      next.attempts = 0;
+      setFlash("ok");
+    } else {
+      next.attempts += 1;
+      setFlash("no");
+      if (next.attempts >= 3) { next.q += 1; next.attempts = 0; } // skip, 0 pts, no step
+    }
+    if (next.q >= game.numQ) next.done = true;
+
+    setMe(next);
+    await saveJSON(teamKey(codeIn, team), next);
+    setDigits(["", "", ""]);
+    inputRefs[0].current?.focus();
+    setTimeout(() => setFlash(null), 900);
+    if (next.done) setTimeout(() => setPhase("done"), 900);
+  };
+
+  const setDigit = (i, v) => {
+    const d = v.replace(/\D/g, "").slice(-1);
+    const nd = digits.map((x, xi) => (xi === i ? d : x));
+    setDigits(nd);
+    if (d && i < 2) inputRefs[i + 1].current?.focus();
+  };
+
+  /* ---- screens ---- */
+  if (phase === "join") {
+    return (
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: 20 }}>
+        <Eyebrow>Player</Eyebrow>
+        <h1 style={{ ...font, fontWeight: 900, fontSize: 28, color: BLUE, marginTop: 0 }}>Join the maze</h1>
+        <Card>
+          <div style={{ ...font, fontSize: 13, fontWeight: 700, color: BLUE, marginBottom: 6 }}>Game code</div>
+          <input value={codeIn} inputMode="numeric" maxLength={4}
+            onChange={async (e) => {
+              const v = e.target.value.replace(/\D/g, "").slice(0, 4);
+              setCodeIn(v); setGame(null); setTeam("");
+              if (v.length === 4) setGame(await loadJSON(gameKey(v)));
+            }}
+            placeholder="4-digit code"
+            style={{ ...font, width: "100%", boxSizing: "border-box", padding: "14px", borderRadius: 12, border: `2px solid ${GREY_LINE}`, fontSize: 26, fontWeight: 900, letterSpacing: "0.4em", textAlign: "center" }} />
+          {game && (
+            <>
+              <div style={{ ...font, fontSize: 13, fontWeight: 700, color: BLUE, margin: "16px 0 6px" }}>Your team</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {game.teams.map((t, i) => (
+                  <button key={t} onClick={() => setTeam(t)}
+                    style={{ ...font, cursor: "pointer", borderRadius: 999, padding: "10px 16px", fontWeight: 700, fontSize: 15,
+                      border: `2px solid ${TEAM_COLORS[i % TEAM_COLORS.length]}`,
+                      background: team === t ? TEAM_COLORS[i % TEAM_COLORS.length] : "#fff",
+                      color: team === t ? "#fff" : INK }}>{t}</button>
+                ))}
+              </div>
+            </>
+          )}
+          {err && <div style={{ ...font, color: ORANGE, fontWeight: 700, marginTop: 12, fontSize: 14 }}>{err}</div>}
+          <div style={{ marginTop: 18, display: "flex", gap: 10, justifyContent: "space-between" }}>
+            <Btn kind="ghost" small onClick={goHome}>Back</Btn>
+            <Btn onClick={join} disabled={codeIn.length !== 4 || !team}>Enter →</Btn>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (phase === "lobby") {
+    return (
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: 20, textAlign: "center" }}>
+        <Card>
+          <div style={{ fontSize: 52 }}>🧭</div>
+          <h2 style={{ ...font, fontWeight: 900, color: BLUE }}>You're in, {team}!</h2>
+          <p style={{ ...font, color: "#555" }}>Waiting for the facilitator to open the maze…</p>
+          <div style={{ ...font, fontSize: 12, color: "#999" }}>This screen refreshes by itself.</div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (phase === "done") {
+    return (
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: 20, textAlign: "center" }}>
+        <Card>
+          <div style={{ fontSize: 56 }}>🏁</div>
+          <h2 style={{ ...font, fontWeight: 900, color: ORANGE, marginBottom: 4 }}>You escaped the maze!</h2>
+          <p style={{ ...font, color: BLUE, fontWeight: 900, fontSize: 30, margin: "8px 0" }}>{me?.score ?? 0} pts</p>
+          <p style={{ ...font, color: "#555" }}>{me?.steps ?? 0} gates opened out of {game?.numQ}. Watch the big screen for the final standings.</p>
+        </Card>
+      </div>
+    );
+  }
+
+  /* play */
+  const qNum = (me?.q ?? 0) + 1;
+  const attemptsLeft = 3 - (me?.attempts ?? 0);
+  const pct = Math.round(((me?.q ?? 0) / (game?.numQ || 1)) * 100);
+
+  return (
+    <div style={{ maxWidth: 420, margin: "0 auto", padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <Eyebrow>{team}</Eyebrow>
+        <div style={{ ...font, fontWeight: 900, color: BLUE }}>{me?.score ?? 0} pts</div>
+      </div>
+
+      {/* progress bar */}
+      <div style={{ background: GREY_LINE, borderRadius: 999, height: 10, margin: "6px 0 18px" }}>
+        <div style={{ width: `${pct}%`, height: "100%", borderRadius: 999, background: ORANGE, transition: "width .5s ease" }} />
+      </div>
+
+      <Card style={{ textAlign: "center", borderColor: flash === "no" ? ORANGE : GREY_LINE, transition: "border-color .2s" }}>
+        <Eyebrow color={BLUE}>Question {qNum} of {game?.numQ}</Eyebrow>
+        <h2 style={{ ...font, fontWeight: 900, color: INK, margin: "4px 0 2px", fontSize: 22 }}>Enter the 3-digit unlock code</h2>
+        <p style={{ ...font, color: "#666", fontSize: 13, marginTop: 0 }}>Solve the paper puzzle — right digits, right order.</p>
+
+        {/* digit boxes */}
+        <div style={{ display: "flex", gap: 12, justifyContent: "center", margin: "18px 0" }}>
+          {digits.map((d, i) => (
+            <input key={i} ref={inputRefs[i]} value={d} inputMode="numeric"
+              onChange={(e) => setDigit(i, e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Backspace" && !d && i > 0) inputRefs[i - 1].current?.focus(); if (e.key === "Enter") submit(); }}
+              style={{ ...font, width: 64, height: 76, textAlign: "center", fontSize: 36, fontWeight: 900, color: BLUE,
+                borderRadius: 14, border: `3px solid ${flash === "ok" ? "#2E7D32" : flash === "no" ? ORANGE : BLUE}`,
+                background: "#fff", outline: "none", transition: "border-color .2s" }} />
+          ))}
+        </div>
+
+        {/* strikes */}
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginBottom: 16 }}>
+          {[0, 1, 2].map((i) => (
+            <span key={i} style={{ width: 14, height: 14, borderRadius: "50%", display: "inline-block",
+              background: i < (me?.attempts ?? 0) ? ORANGE : GREY_LINE }} />
+          ))}
+        </div>
+        <div style={{ ...font, fontSize: 13, color: attemptsLeft === 1 ? ORANGE : "#666", fontWeight: attemptsLeft === 1 ? 900 : 400, marginBottom: 14 }}>
+          {flash === "ok" ? "✔ Gate opened — moving on!" :
+           flash === "no" ? (attemptsLeft > 0 ? `✖ Wrong code — ${attemptsLeft} attempt${attemptsLeft > 1 ? "s" : ""} left` : "✖ Out of attempts — skipping ahead (0 pts)") :
+           `${attemptsLeft} attempt${attemptsLeft > 1 ? "s" : ""} left · ${POINTS_BY_ATTEMPT[me?.attempts ?? 0]} pts on offer`}
+        </div>
+
+        <Btn onClick={submit} disabled={digits.some((d) => !d)} style={{ width: "100%" }}>Unlock 🔓</Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+export default function App() {
+  useFonts();
+  const [role, setRole] = useState(null);
+
+  return (
+    <div style={{ minHeight: "100vh", background: GREY_BG, paddingBottom: 60 }}>
+      {/* header band */}
+      <div style={{ background: BLUE, padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 30, height: 30, borderRadius: "50%", background: ORANGE, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 900, ...font }}>C</div>
+        <div style={{ ...font, color: "#fff", fontWeight: 900, letterSpacing: "0.14em", fontSize: 15 }}>CALDERYS · ESCAPE THE MAZE</div>
+        <div style={{ marginLeft: "auto", ...font, color: "#9FB0E8", fontSize: 11 }}>Newcomer induction game</div>
+      </div>
+      <div style={{ height: 5, background: ORANGE }} />
+
+      {!role ? (
+        <div style={{ maxWidth: 640, margin: "60px auto 0", padding: 20, textAlign: "center" }}>
+          <h1 style={{ ...font, fontWeight: 900, fontSize: 36, color: BLUE, marginBottom: 6 }}>Who are you?</h1>
+          <p style={{ ...font, color: "#555", marginBottom: 30 }}>Facilitators build and watch the maze. Teams race to escape it.</p>
+          <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+            <Card style={{ width: 240, cursor: "pointer" }} >
+              <div onClick={() => setRole("fac")}>
+                <div style={{ fontSize: 44 }}>🗝️</div>
+                <h3 style={{ ...font, color: BLUE, fontWeight: 900 }}>Facilitator</h3>
+                <p style={{ ...font, fontSize: 13, color: "#666" }}>Create the game, set the codes, watch teams escape live.</p>
+                <Btn small kind="blue" onClick={() => setRole("fac")}>Open dashboard</Btn>
+              </div>
+            </Card>
+            <Card style={{ width: 240, cursor: "pointer" }}>
+              <div onClick={() => setRole("player")}>
+                <div style={{ fontSize: 44 }}>🧭</div>
+                <h3 style={{ ...font, color: ORANGE, fontWeight: 900 }}>Team / Player</h3>
+                <p style={{ ...font, fontSize: 13, color: "#666" }}>Join with the game code and race through the locks.</p>
+                <Btn small onClick={() => setRole("player")}>Join a game</Btn>
+              </div>
+            </Card>
+          </div>
+        </div>
+      ) : role === "fac" ? (
+        <Facilitator goHome={() => setRole(null)} />
+      ) : (
+        <Participant goHome={() => setRole(null)} />
+      )}
+    </div>
+  );
+}
