@@ -16,11 +16,10 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-
-  const firebaseConfig = {
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  var firebaseConfig = {
     apiKey: "AIzaSyAHydHI5Zo4wDKhzrDsannF9H1YpN6yx7M",
     authDomain: "calderys-maze-game.firebaseapp.com",
     projectId: "calderys-maze-game",
@@ -28,14 +27,11 @@
     messagingSenderId: "908743996017",
     appId: "1:908743996017:web:6667224e09215b5434a1d0"
   };
-
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-
-  window.__fb = { db, doc, getDoc, setDoc };
+  firebase.initializeApp(firebaseConfig);
+  window.__fb = { db: firebase.firestore() };
   window.dispatchEvent(new Event("firebase-ready"));
 </script>
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-src">
 const { useState, useEffect, useRef, useCallback } = React;
 
 /* ============================================================
@@ -70,9 +66,8 @@ function waitForFirebase() {
 async function loadJSON(key) {
   try {
     const fb = await waitForFirebase();
-    const ref = fb.doc(fb.db, "calderys", key);
-    const snap = await fb.getDoc(ref);
-    return snap.exists() ? snap.data().value : null;
+    const snap = await fb.db.collection("calderys").doc(key).get();
+    return snap.exists ? snap.data().value : null;
   } catch {
     return null;
   }
@@ -80,8 +75,7 @@ async function loadJSON(key) {
 async function saveJSON(key, obj) {
   try {
     const fb = await waitForFirebase();
-    const ref = fb.doc(fb.db, "calderys", key);
-    await fb.setDoc(ref, { value: obj, updatedAt: Date.now() });
+    await fb.db.collection("calderys").doc(key).set({ value: obj, updatedAt: Date.now() });
     return true;
   } catch {
     return false;
@@ -295,7 +289,7 @@ function Facilitator({ goHome }) {
                     <td style={{ padding: "10px 8px" }}>{r.steps || 0} / {numQ}</td>
                     <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 900, color: BLUE }}>{r.score || 0}</td>
                     <td style={{ padding: "10px 8px", textAlign: "right" }}>
-                      {r.done ? <span style={{ color: ORANGE, fontWeight: 700 }}>Escaped \uD83C\uDFC1</span>
+                      {r.done ? <span style={{ color: ORANGE, fontWeight: 700 }}>Escaped 🏁</span>
                         : r.claimed ? <span style={{ color: BLUE }}>Playing</span>
                         : <span style={{ color: "#999" }}>Not joined</span>}
                     </td>
@@ -371,7 +365,7 @@ function Facilitator({ goHome }) {
       {err && <div style={{ ...font, color: ORANGE, fontWeight: 700, marginBottom: 12 }}>{err}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "space-between" }}>
         <Btn kind="ghost" onClick={goHome}>Back</Btn>
-        <Btn onClick={startGame} disabled={saving}>{saving ? "Opening the maze..." : "Start game ->"}</Btn>
+        <Btn onClick={startGame} disabled={saving}>{saving ? "Opening the maze..." : "Start game →"}</Btn>
       </div>
     </div>
   );
@@ -481,7 +475,7 @@ function Participant({ goHome }) {
           {err && <div style={{ ...font, color: ORANGE, fontWeight: 700, marginTop: 12, fontSize: 14 }}>{err}</div>}
           <div style={{ marginTop: 18, display: "flex", gap: 10, justifyContent: "space-between" }}>
             <Btn kind="ghost" small onClick={goHome}>Back</Btn>
-            <Btn onClick={join} disabled={codeIn.length !== 4 || !team}>Enter -></Btn>
+            <Btn onClick={join} disabled={codeIn.length !== 4 || !team}>Enter →</Btn>
           </div>
         </Card>
       </div>
@@ -492,7 +486,7 @@ function Participant({ goHome }) {
     return (
       <div style={{ maxWidth: 420, margin: "0 auto", padding: 20, textAlign: "center" }}>
         <Card>
-          <div style={{ fontSize: 52 }}>\uD83E\uDDED</div>
+          <div style={{ fontSize: 52 }}>🧭</div>
           <h2 style={{ ...font, fontWeight: 900, color: BLUE }}>You're in, {team}!</h2>
           <p style={{ ...font, color: "#555" }}>Waiting for the facilitator to open the maze...</p>
           <div style={{ ...font, fontSize: 12, color: "#999" }}>This screen refreshes by itself.</div>
@@ -505,7 +499,7 @@ function Participant({ goHome }) {
     return (
       <div style={{ maxWidth: 420, margin: "0 auto", padding: 20, textAlign: "center" }}>
         <Card>
-          <div style={{ fontSize: 56 }}>\uD83C\uDFC1</div>
+          <div style={{ fontSize: 56 }}>🏁</div>
           <h2 style={{ ...font, fontWeight: 900, color: ORANGE, marginBottom: 4 }}>You escaped the maze!</h2>
           <p style={{ ...font, color: BLUE, fontWeight: 900, fontSize: 30, margin: "8px 0" }}>{me?.score ?? 0} pts</p>
           <p style={{ ...font, color: "#555" }}>{me?.steps ?? 0} gates opened out of {game?.numQ}. Watch the big screen for the final standings.</p>
@@ -558,7 +552,7 @@ function Participant({ goHome }) {
             `${attemptsLeft} attempt${attemptsLeft > 1 ? "s" : ""} left · ${POINTS_BY_ATTEMPT[me?.attempts ?? 0]} pts on offer`}
         </div>
 
-        <Btn onClick={submit} disabled={digits.some((d) => !d)} style={{ width: "100%" }}>Unlock \uD83D\uDD13</Btn>
+        <Btn onClick={submit} disabled={digits.some((d) => !d)} style={{ width: "100%" }}>Unlock 🔓</Btn>
       </Card>
     </div>
   );
@@ -587,7 +581,7 @@ function App() {
           <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
             <Card style={{ width: 240, cursor: "pointer" }} >
               <div onClick={() => setRole("fac")}>
-                <div style={{ fontSize: 44 }}>\uD83D\uDDDD\uFE0F</div>
+                <div style={{ fontSize: 44 }}>🗝️</div>
                 <h3 style={{ ...font, color: BLUE, fontWeight: 900 }}>Facilitator</h3>
                 <p style={{ ...font, fontSize: 13, color: "#666" }}>Create the game, set the codes, watch teams escape live.</p>
                 <Btn small kind="blue" onClick={() => setRole("fac")}>Open dashboard</Btn>
@@ -595,7 +589,7 @@ function App() {
             </Card>
             <Card style={{ width: 240, cursor: "pointer" }}>
               <div onClick={() => setRole("player")}>
-                <div style={{ fontSize: 44 }}>\uD83E\uDDED</div>
+                <div style={{ fontSize: 44 }}>🧭</div>
                 <h3 style={{ ...font, color: ORANGE, fontWeight: 900 }}>Team / Player</h3>
                 <p style={{ ...font, fontSize: 13, color: "#666" }}>Join with the game code and race through the locks.</p>
                 <Btn small onClick={() => setRole("player")}>Join a game</Btn>
@@ -628,6 +622,15 @@ function Root() {
 
 const rootEl = document.getElementById("root");
 ReactDOM.createRoot(rootEl).render(<Root />);
+</script>
+<script>
+(function(){
+  var src = document.getElementById('app-src').textContent;
+  var out = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
+  var s = document.createElement('script');
+  s.textContent = out;
+  document.body.appendChild(s);
+})();
 </script>
 </body>
 </html>
