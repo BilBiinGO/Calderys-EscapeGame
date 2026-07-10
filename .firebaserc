@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "calderys-maze-game"
-  }
+  },
+  "targets": {
+    "calderys-maze-game": {
+      "hosting": {
+        "escapegame": [
+          "calderys-escapegame"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
